@@ -53,13 +53,6 @@ def get_reel_data(reel_url: str) -> Dict:
         response = client.get(api_url)
         
         print(f"Status Code: {response.status_code}")
-        print(f"Response Headers: {dict(response.headers)}")
-        
-        # Save raw response for debugging
-        with open('debug_response.txt', 'w', encoding='utf-8') as f:
-            f.write(f"Status Code: {response.status_code}\n")
-            f.write(f"Headers: {dict(response.headers)}\n")
-            f.write(f"Response Text: {response.text}")
         
         # Try alternative endpoint if first one fails
         if response.status_code != 200:
@@ -70,10 +63,6 @@ def get_reel_data(reel_url: str) -> Dict:
             
         try:
             data = response.json()
-            print("\nSuccessfully parsed JSON response")
-            
-            with open('debug_response.json', 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
             
             # Try to extract data from either response format
             if 'items' in data:
@@ -104,7 +93,6 @@ def get_reel_data(reel_url: str) -> Dict:
                 
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {str(e)}")
-            print(f"Raw response text: {response.text[:500]}...")
             return None
 
     except Exception as e:

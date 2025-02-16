@@ -46,5 +46,6 @@ output/
 
 # Logs
 *.log 
+*.txt
 
 browser_profile/
