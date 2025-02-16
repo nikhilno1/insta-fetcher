@@ -140,7 +140,7 @@ class InstagramReelExtractor:
 
     def extract_reel_data(self, reel_url: str) -> Dict:
         """Extract data from a single reel."""
-        if '/reels/' not in reel_url or reel_url == 'https://www.instagram.com/':
+        if not any(pattern in reel_url for pattern in ['/reel/', '/reels/']) or reel_url == 'https://www.instagram.com/':
             raise ValueError(f"Invalid reel URL: {reel_url}")
         
         caption = ""
@@ -164,7 +164,8 @@ class InstagramReelExtractor:
         time.sleep(1)
         
         current_url = self.page.url
-        if '/reels/' not in current_url:
+        # Updated URL validation to match the input URL format
+        if not any(pattern in current_url for pattern in ['/reel/', '/reels/']):
             raise ValueError(f"Failed to load reel: {current_url}")
         
         try:
@@ -375,69 +376,107 @@ class InstagramReelExtractor:
     def process_reels(self) -> None:
         """Process reels with natural behavior."""
         try:
-            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Starting to process {self.num_reels} reels")
             self.setup_browser()
-            
             self.login_to_instagram()
-            time.sleep(0.5)  # Reduced from 1-2s
+            time.sleep(0.5)
             
-            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Navigating to starting reel: {self.start_url}")
-            self.page.goto(self.start_url, wait_until="networkidle")
-            time.sleep(0.5)  # Reduced from 1s
-            
-            current_url = self.page.url
-            processed_count = 0
-            skipped_count = 0
-            
-            while processed_count < self.num_reels:
-                print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Processing reel {processed_count + 1}/{self.num_reels}")
+            if self.start_url.endswith('.txt'):  # File mode
+                with open(self.start_url, 'r') as f:
+                    urls = [line.strip() for line in f if line.strip()]
+                total_urls = len(urls)
+                print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Found {total_urls} URLs in file")
                 
-                if processed_count > 0:
-                    time.sleep(0.5)  # Reduced from 1-2s
+                processed_count = 0
+                skipped_count = 0
                 
-                reel_id = current_url.split('/')[-2]
-                output_file = self.output_dir / f"{reel_id}.json"
-                
-                if output_file.exists():
-                    print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Reel {reel_id} already exists in {output_file}, skipping.")
-                    skipped_count += 1
-                    processed_count += 1
-                else:
-                    try:
-                        reel_data = self.extract_reel_data(current_url)
-                        with open(output_file, 'w') as f:
-                            json.dump(reel_data, f, indent=4)
-                        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Saved new reel data to {output_file}")
+                for idx, url in enumerate(urls, 1):  # Changed to enumerate starting from 1
+                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Processing reel {idx}/{total_urls}")
+                    
+                    if idx > 1:  # Changed from processed_count to idx
+                        time.sleep(0.5)
+                    
+                    reel_id = url.split('/')[-2]
+                    output_file = self.output_dir / f"{reel_id}.json"
+                    
+                    if output_file.exists():
+                        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Reel {reel_id} already exists in {output_file}, skipping.")
+                        skipped_count += 1
                         processed_count += 1
-                    except Exception as e:
-                        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {reel_id}: {str(e)}")
+                    else:
+                        try:
+                            reel_data = self.extract_reel_data(url)
+                            with open(output_file, 'w') as f:
+                                json.dump(reel_data, f, indent=4)
+                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Saved new reel data to {output_file}")
+                            processed_count += 1
+                        except Exception as e:
+                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {reel_id}: {str(e)}")
+            
+            else:  # Single URL mode (existing behavior)
+                print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Starting to process {self.num_reels} reels")
+                print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Navigating to starting reel: {self.start_url}")
                 
-                if processed_count >= self.num_reels:
-                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Completed processing {self.num_reels} reels")
-                    print(f"New reels: {processed_count - skipped_count}")
-                    print(f"Skipped reels: {skipped_count}")
-                    break
+                self.page.goto(self.start_url, wait_until="networkidle")
+                time.sleep(0.5)
                 
-                time.sleep(0.3)  # Reduced from 0.5s
-                current_url = self.scroll_to_next_reel()
+                current_url = self.page.url
+                processed_count = 0
+                skipped_count = 0
+                
+                while processed_count < self.num_reels:
+                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Processing reel {processed_count + 1}/{self.num_reels}")
+                    
+                    if processed_count > 0:
+                        time.sleep(0.5)
+                    
+                    reel_id = current_url.split('/')[-2]
+                    output_file = self.output_dir / f"{reel_id}.json"
+                    
+                    if output_file.exists():
+                        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Reel {reel_id} already exists in {output_file}, skipping.")
+                        skipped_count += 1
+                        processed_count += 1
+                    else:
+                        try:
+                            reel_data = self.extract_reel_data(current_url)
+                            with open(output_file, 'w') as f:
+                                json.dump(reel_data, f, indent=4)
+                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Saved new reel data to {output_file}")
+                            processed_count += 1
+                        except Exception as e:
+                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {reel_id}: {str(e)}")
+                    
+                    if processed_count >= self.num_reels:
+                        print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Completed processing {self.num_reels} reels")
+                        print(f"New reels: {processed_count - skipped_count}")
+                        print(f"Skipped reels: {skipped_count}")
+                        break
+                    
+                    time.sleep(0.3)
+                    current_url = self.scroll_to_next_reel()
         
         except Exception as e:
             print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel: {str(e)}")
         
         finally:
             if self.browser:
-                time.sleep(0.5)  # Reduced from 1s
+                time.sleep(0.5)
                 self.browser.close()
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Extract and transcribe Instagram Reels')
-    parser.add_argument('start_url', help='Starting Instagram Reel URL')
-    parser.add_argument('--num-reels', type=int, default=5, help='Number of reels to process')
+    parser.add_argument('start_url', help='Starting Instagram Reel URL or text file containing reel URLs')
+    parser.add_argument('--num-reels', type=int, default=5, 
+                      help='Number of reels to process (only used with single URL mode)')
     
     args = parser.parse_args()
     
-    extractor = InstagramReelExtractor(args.start_url, args.num_reels, Path(os.getenv('OUTPUT_DIR', 'output')))
+    extractor = InstagramReelExtractor(
+        args.start_url, 
+        args.num_reels if not args.start_url.endswith('.txt') else None,
+        Path(os.getenv('OUTPUT_DIR', 'output'))
+    )
     extractor.process_reels()
 
 if __name__ == "__main__":
