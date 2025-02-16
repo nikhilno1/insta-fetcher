@@ -1,0 +1,6 @@
+playwright==1.41.2
+openai>=1.0.0
+pytube==15.0.0
+python-dotenv==1.0.0
+yt-dlp
+pydub==0.25.1

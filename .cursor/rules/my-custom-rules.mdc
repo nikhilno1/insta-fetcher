@@ -1,0 +1,10 @@
+---
+description: General rules to build the application
+globs: 
+---
+
+# Your rule content
+
+- Requirements are mentioned in [requirements.md](mdc:project-docs/requirements.md)
+- Tech stack details are given in [tech-stack-md](mdc:project-docs/tech-stack-md)
+
