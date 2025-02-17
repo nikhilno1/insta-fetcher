@@ -4,3 +4,5 @@ pytube==15.0.0
 python-dotenv==1.0.0
 yt-dlp
 pydub==0.25.1
+supabase>=2.0.0
+tqdm>=4.66.0
