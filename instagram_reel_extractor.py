@@ -55,8 +55,7 @@ class InstagramReelExtractor:
                 if keywords_str:
                     self.keywords = [k.strip().lower() for k in keywords_str.split(',') if k.strip()]
                     print("Using custom keywords from environment variables")
-            
-            print(f"Filtering reels for keywords: {self.keywords}")
+                print(f"Filtering reels for keywords: {self.keywords}")
         else:
             self.keywords = []
             if is_search:
@@ -480,161 +479,416 @@ class InstagramReelExtractor:
             self.page.screenshot(path="login_error.png")
             raise
 
-    def search_reels(self) -> str:
-        """Search for reels using the given keyword and return the first reel URL."""
-        print(f"Searching for reels with keyword: {self.start_input}")
+    def get_google_search_url(self, keyword: str, start: int = 0, filters: Dict = None) -> str:
+        """Generate Google search URL with advanced filters."""
+        base_query = f"site:instagram.com/reel {keyword}"
         
-        # Navigate to Instagram search page
-        search_url = f"https://www.instagram.com/explore/tags/{self.start_input}/"
-        self.page.goto(search_url, wait_until="networkidle")
-        time.sleep(random.uniform(2, 3))
+        # Apply advanced filters if provided
+        if filters:
+            if filters.get('time_range'):
+                # time_range can be 'h' (hour), 'd' (day), 'w' (week), 'm' (month), 'y' (year)
+                base_query += f" &tbs=qdr:{filters['time_range']}"
+            
+            if filters.get('min_length'):
+                # Add duration filter using Google's time notation (e.g., "longer than 2 minutes")
+                base_query += f" longer than {filters['min_length']} minutes"
+            
+            if filters.get('exact_phrase'):
+                # Add exact phrase matching
+                base_query = base_query.replace(keyword, f'"{keyword}"')
+            
+            if filters.get('exclude_terms'):
+                # Add terms to exclude
+                for term in filters['exclude_terms']:
+                    base_query += f" -{term}"
 
+        params = {
+            "q": base_query,
+            "start": start,
+            "num": 10,  # Results per page
+            "hl": "en",  # Language
+            "safe": filters.get('safe_search', 'off')
+        }
+        
+        return "https://www.google.com/search", params
+
+    def search_reels(self) -> str:
+        """Search for reels using Google and return the first valid reel URL."""
         try:
-            # Look for the Reels tab and click it
-            reels_tab = self.page.get_by_text("Reels")
-            reels_tab.click()
-            time.sleep(random.uniform(1, 2))
-
-            # Find the first reel link
-            reel_link = self.page.locator('a[href*="/reel/"]').first
-            if not reel_link:
-                raise ValueError("No reels found for the given keyword")
-
-            reel_url = reel_link.get_attribute('href')
-            if not reel_url.startswith('http'):
-                reel_url = f"https://www.instagram.com{reel_url}"
-
-            print(f"Found first reel: {reel_url}")
-            return reel_url
-
+            # Parse advanced filters from environment variables or command line arguments
+            filters = {
+                'time_range': os.getenv('SEARCH_TIME_RANGE', ''),  # e.g., 'h', 'd', 'w', 'm', 'y'
+                'min_length': os.getenv('SEARCH_MIN_LENGTH', ''),  # in minutes
+                'exact_phrase': os.getenv('SEARCH_EXACT_MATCH', '').lower() == 'true',
+                'exclude_terms': os.getenv('SEARCH_EXCLUDE', '').split(',') if os.getenv('SEARCH_EXCLUDE') else [],
+                'safe_search': os.getenv('SEARCH_SAFE', 'off')
+            }
+            
+            # Remove empty filters
+            filters = {k: v for k, v in filters.items() if v}
+            
+            if filters:
+                print("Applying search filters:", json.dumps(filters, indent=2))
+            
+            # Create a new browser page specifically for Google search
+            print("Creating new page for Google search...")
+            search_page = self.page.context.new_page()
+            
+            try:
+                # Get reel URLs from Google search
+                reel_urls = self.get_reel_urls_from_google(
+                    self.start_input,
+                    self.num_reels,
+                    filters=filters,
+                    search_page=search_page  # Pass the page to the search method
+                )
+            finally:
+                # Clean up the search page
+                search_page.close()
+            
+            if not reel_urls:
+                raise ValueError(f"No reels found for keyword: {self.start_input}")
+            
+            # Store the URLs for later processing
+            self.search_results = reel_urls
+            print(f"Found {len(reel_urls)} reels to process")
+            
+            # Return the first URL to start processing
+            return reel_urls[0]
+            
         except Exception as e:
             print(f"Error during search: {str(e)}")
             raise
 
+    def get_random_user_agent(self) -> str:
+        """Return a random user agent from a pool of modern browsers."""
+        user_agents = [
+            # Chrome Windows
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            # Firefox Windows
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            # Edge Windows
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0',
+            # Safari macOS
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+        ]
+        return random.choice(user_agents)
+
+    def simulate_human_behavior(self, page: Page) -> None:
+        """Simulate human-like behavior on the page."""
+        try:
+            # Random scroll
+            scroll_amount = random.randint(300, 700)
+            page.mouse.wheel(0, scroll_amount)
+            time.sleep(random.uniform(1, 2))
+            
+            # Random mouse movements
+            for _ in range(random.randint(2, 4)):
+                x = random.randint(100, 800)
+                y = random.randint(100, 600)
+                page.mouse.move(x, y, steps=random.randint(5, 10))
+                time.sleep(random.uniform(0.5, 1))
+            
+            # Sometimes move mouse to a link but don't click
+            links = page.query_selector_all('a')
+            if links:
+                random_link = random.choice(links)
+                box = random_link.bounding_box()
+                if box:
+                    page.mouse.move(
+                        box['x'] + box['width'] / 2,
+                        box['y'] + box['height'] / 2,
+                        steps=random.randint(5, 10)
+                    )
+                    time.sleep(random.uniform(0.5, 1))
+        except Exception as e:
+            print(f"Error during human behavior simulation: {e}")
+
+    def wait_for_human_verification(self, page: Page) -> bool:
+        """Wait for human to solve CAPTCHA."""
+        print("\n=== CAPTCHA/Human Verification Detected! ===")
+        print("Please solve the verification manually in the browser window.")
+        print("Press Enter after you've completed the verification...")
+        
+        # Wait for user input
+        input()
+        
+        # Check if we can proceed
+        try:
+            # Try to find common CAPTCHA elements
+            captcha_selectors = [
+                'iframe[src*="recaptcha"]',
+                'iframe[src*="captcha"]',
+                '#captcha',
+                '.g-recaptcha',
+            ]
+            
+            for selector in captcha_selectors:
+                if page.query_selector(selector):
+                    print("CAPTCHA still detected. Please complete the verification...")
+                    return False
+            
+            return True
+        except Exception:
+            return False
+
+    def get_reel_urls_from_google(self, keyword: str, num_results: int = 10, filters: Dict = None, search_page: Page = None) -> List[str]:
+        """Get Instagram reel URLs from Google search results with pagination."""
+        print(f"Searching Google for Instagram reels about: {keyword}")
+        
+        if not search_page:
+            raise ValueError("Search page is required")
+        
+        reel_urls = []
+        start_index = 0
+        max_pages = (num_results + 9) // 10
+        consecutive_empty_results = 0
+        
+        try:
+            while len(reel_urls) < num_results:  # Keep going until we have enough reels
+                # Update user agent for each page
+                search_page.set_extra_http_headers({
+                    'User-Agent': self.get_random_user_agent(),
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                })
+                
+                # Construct the Google search URL
+                search_url = f"https://www.google.com/search?q=site:instagram.com/reel+{keyword}&start={start_index}&num=10&hl=en"
+                if filters:
+                    if filters.get('time_range'):
+                        search_url += f"&tbs=qdr:{filters['time_range']}"
+                
+                print(f"\nFetching results page {(start_index // 10) + 1}...")
+                print(f"Search URL: {search_url}")
+                
+                # Navigate to the search URL
+                search_page.goto(search_url, wait_until="networkidle")
+                time.sleep(2)  # Short wait for page stability
+                
+                # Check for CAPTCHA/verification
+                if any(text in search_page.content().lower() 
+                      for text in ['captcha', 'unusual traffic', 'verify you\'re a human']):
+                    print("\nDetected potential CAPTCHA or verification...")
+                    while not self.wait_for_human_verification(search_page):
+                        print("Verification not completed. Please try again...")
+                        time.sleep(2)
+                    print("Verification completed! Continuing with search...")
+                
+                # Extract reel links
+                new_links = search_page.query_selector_all('a[href*="instagram.com/reel/"]')
+                page_urls = []
+                
+                for link in new_links:
+                    url = link.get_attribute('href')
+                    if url:
+                        # Clean up the URL
+                        if '?' in url:
+                            url = url.split('?')[0]
+                        if url not in reel_urls and url not in page_urls and '/reel/' in url:
+                            page_urls.append(url)
+                            print(f"Found reel: {url}")
+                
+                if not page_urls:
+                    consecutive_empty_results += 1
+                    if consecutive_empty_results >= 2:
+                        print("No more results found")
+                        break
+                else:
+                    consecutive_empty_results = 0
+                    reel_urls.extend(page_urls)
+                
+                # Move to next page
+                if len(reel_urls) < num_results:
+                    start_index += 10
+                    time.sleep(2)  # Short delay between pages
+                else:
+                    break
+            
+            if not reel_urls:
+                print("No reels found matching the criteria")
+            else:
+                print(f"\nFound {len(reel_urls)} reels in total")
+                
+                # Save URLs to a temporary file
+                temp_file = Path('temp_reel_urls.txt')
+                with open(temp_file, 'w') as f:
+                    for url in reel_urls[:num_results]:
+                        f.write(f"{url}\n")
+                print(f"Saved reel URLs to {temp_file}")
+            
+            return reel_urls[:num_results]
+            
+        except Exception as e:
+            print(f"Error during Google search: {str(e)}")
+            return reel_urls[:num_results] if reel_urls else []
+
     def process_reels(self) -> None:
         """Process reels with natural behavior."""
         try:
-            self.setup_browser()
-            self.login_to_instagram()
-            time.sleep(0.5)
-
             if self.is_search:
-                # Search mode: Get the starting URL from search
-                start_url = self.search_reels()
-                self.page.goto(start_url, wait_until="networkidle")
-                current_url = self.page.url
-                processed_count = 0
-                skipped_count = 0
-
-                # Process reels similar to single URL mode
-                while processed_count < self.num_reels:
-                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Processing reel {processed_count + 1}/{self.num_reels}")
+                # Create a temporary context for Google search
+                with sync_playwright() as p:
+                    search_browser = p.chromium.launch(
+                        headless=False,
+                        slow_mo=int(os.getenv('BROWSER_SLOWMO', '0'))
+                    )
+                    search_context = search_browser.new_context(
+                        user_agent=self.get_random_user_agent()
+                    )
+                    search_page = search_context.new_page()
                     
-                    if processed_count > 0:
-                        time.sleep(0.5)
+                    try:
+                        # Get URLs from Google search
+                        reel_urls = self.get_reel_urls_from_google(
+                            self.start_input,
+                            self.num_reels,
+                            search_page=search_page
+                        )
+                    finally:
+                        search_context.close()
+                        search_browser.close()
+                
+                if not reel_urls:
+                    raise ValueError(f"No reels found for keyword: {self.start_input}")
+                
+                # Process the reels using the file-based approach
+                temp_file = Path('temp_reel_urls.txt')
+                if temp_file.exists():
+                    # Switch to file mode processing
+                    self.start_input = str(temp_file)
+                    self.is_search = False  # Switch to URL mode
+                    self.process_reels()  # Recursively call with file mode
                     
-                    reel_id = current_url.split('/')[-2]
-                    output_file = self.output_dir / f"{reel_id}.json"
+                    # Clean up temp file
+                    temp_file.unlink()
+                else:
+                    raise ValueError("Failed to create temporary URL file")
+            
+            else:
+                # Original URL/file mode processing
+                self.setup_browser()
+                self.login_to_instagram()
+                time.sleep(2)  # Increased initial wait after login
+                
+                print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Starting to process {self.num_reels} reels")
+                
+                if self.start_input.endswith('.txt'):
+                    # File mode - process URLs from file
+                    with open(self.start_input, 'r') as f:
+                        urls = [line.strip() for line in f if line.strip()]
+                    total_urls = len(urls)
+                    print(f"Found {total_urls} URLs in file")
                     
-                    if output_file.exists():
-                        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Reel {reel_id} already exists in {output_file}, skipping.")
-                        skipped_count += 1
-                        processed_count += 1
-                    else:
-                        try:
-                            reel_data = self.extract_reel_data(current_url)
-                            with open(output_file, 'w') as f:
-                                json.dump(reel_data, f, indent=4)
-                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Saved new reel data to {output_file}")
+                    processed_count = 0
+                    skipped_count = 0
+                    
+                    # Process each URL individually
+                    for idx, url in enumerate(urls[:self.num_reels], 1):
+                        print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Processing reel {idx}/{min(total_urls, self.num_reels)}")
+                        
+                        reel_id = url.strip('/').split('/')[-1]
+                        output_file = self.output_dir / f"{reel_id}.json"
+                        
+                        if output_file.exists():
+                            print(f"Reel {reel_id} already exists in {output_file}, skipping.")
+                            skipped_count += 1
                             processed_count += 1
-                        except Exception as e:
-                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {reel_id}: {str(e)}")
-                    
-                    if processed_count >= self.num_reels:
-                        print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Completed processing {self.num_reels} reels")
-                        print(f"New reels: {processed_count - skipped_count}")
-                        print(f"Skipped reels: {skipped_count}")
-                        break
-                    
-                    time.sleep(0.3)
-                    current_url = self.scroll_to_next_reel()
-
-            elif self.start_input.endswith('.txt'):
-                # File mode processing
-                with open(self.start_input, 'r') as f:
-                    urls = [line.strip() for line in f if line.strip()]
-                total_urls = len(urls)
-                print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Found {total_urls} URLs in file")
-                
-                processed_count = 0
-                skipped_count = 0
-                
-                for idx, url in enumerate(urls, 1):  # Changed to enumerate starting from 1
-                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Processing reel {idx}/{total_urls}")
-                    
-                    if idx > 1:  # Changed from processed_count to idx
-                        time.sleep(0.5)
-                    
-                    reel_id = url.split('/')[-2]
-                    output_file = self.output_dir / f"{reel_id}.json"
-                    
-                    if output_file.exists():
-                        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Reel {reel_id} already exists in {output_file}, skipping.")
-                        skipped_count += 1
-                        processed_count += 1
-                    else:
+                            continue
+                        
                         try:
+                            # Reset page for each new reel
+                            if self.page:
+                                self.page.close()
+                            self.page = self.browser.new_page()
+                            
+                            # Navigate to Instagram first
+                            print("Refreshing Instagram session...")
+                            self.page.goto('https://www.instagram.com/', timeout=30000)
+                            time.sleep(1)
+                            
+                            # Then navigate to the reel
+                            print(f"Navigating to reel: {url}")
+                            self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                            
+                            # Wait for network idle
+                            self.page.wait_for_load_state("networkidle", timeout=30000)
+                            
+                            # Multiple attempts to find the video element
+                            max_attempts = 3
+                            for attempt in range(max_attempts):
+                                try:
+                                    print(f"Attempt {attempt + 1}: Waiting for video element...")
+                                    self.page.wait_for_selector('video', timeout=20000)
+                                    break
+                                except Exception as e:
+                                    if attempt == max_attempts - 1:
+                                        raise e
+                                    print("Retrying...")
+                                    time.sleep(2)
+                            
+                            # Extract data using the existing method
                             reel_data = self.extract_reel_data(url)
                             with open(output_file, 'w') as f:
                                 json.dump(reel_data, f, indent=4)
-                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Saved new reel data to {output_file}")
+                            print(f"Saved new reel data to {output_file}")
                             processed_count += 1
+                            
+                            # Add delay between reels
+                            if processed_count < min(total_urls, self.num_reels):
+                                delay = random.uniform(2, 3)
+                                print(f"Waiting {delay:.1f} seconds before next reel...")
+                                time.sleep(delay)
+                            
                         except Exception as e:
-                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {reel_id}: {str(e)}")
-            
-            else:
-                # Single URL mode processing
-                print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Starting to process {self.num_reels} reels")
-                print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Navigating to starting reel: {self.start_input}")
+                            print(f"Error processing reel {reel_id}: {str(e)}")
+                            # Continue to next URL instead of breaking
+                            continue
+                        
+                        if processed_count >= self.num_reels:
+                            break
                 
-                self.page.goto(self.start_input, wait_until="networkidle")
-                time.sleep(0.5)
-                
-                current_url = self.page.url
-                processed_count = 0
-                skipped_count = 0
-                
-                while processed_count < self.num_reels:
-                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Processing reel {processed_count + 1}/{self.num_reels}")
+                else:
+                    # Single URL mode - process starting from given URL
+                    processed_count = 0
+                    skipped_count = 0
+                    current_url = self.start_input
                     
-                    if processed_count > 0:
-                        time.sleep(0.5)
-                    
-                    reel_id = current_url.split('/')[-2]
-                    output_file = self.output_dir / f"{reel_id}.json"
-                    
-                    if output_file.exists():
-                        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Reel {reel_id} already exists in {output_file}, skipping.")
-                        skipped_count += 1
-                        processed_count += 1
-                    else:
+                    while processed_count < self.num_reels:
+                        print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Processing reel {processed_count + 1}/{self.num_reels}")
+                        
+                        reel_id = current_url.strip('/').split('/')[-1]
+                        output_file = self.output_dir / f"{reel_id}.json"
+                        
+                        if output_file.exists():
+                            print(f"Reel {reel_id} already exists in {output_file}, skipping.")
+                            skipped_count += 1
+                            processed_count += 1
+                        else:
+                            try:
+                                reel_data = self.extract_reel_data(current_url)
+                                with open(output_file, 'w') as f:
+                                    json.dump(reel_data, f, indent=4)
+                                print(f"Saved new reel data to {output_file}")
+                                processed_count += 1
+                            except Exception as e:
+                                print(f"Error processing reel {reel_id}: {str(e)}")
+                                break  # Stop if we encounter an error in single URL mode
+                        
+                        if processed_count >= self.num_reels:
+                            break
+                        
                         try:
-                            reel_data = self.extract_reel_data(current_url)
-                            with open(output_file, 'w') as f:
-                                json.dump(reel_data, f, indent=4)
-                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Saved new reel data to {output_file}")
-                            processed_count += 1
+                            current_url = self.scroll_to_next_reel()
                         except Exception as e:
-                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {reel_id}: {str(e)}")
-                    
-                    if processed_count >= self.num_reels:
-                        print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Completed processing {self.num_reels} reels")
-                        print(f"New reels: {processed_count - skipped_count}")
-                        print(f"Skipped reels: {skipped_count}")
-                        break
-                    
-                    time.sleep(0.3)
-                    current_url = self.scroll_to_next_reel()
+                            print(f"Error scrolling to next reel: {str(e)}")
+                            break
+                
+                print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Completed processing {processed_count} reels")
+                print(f"New reels: {processed_count - skipped_count}")
+                print(f"Skipped reels: {skipped_count}")
         
         except Exception as e:
             print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel: {str(e)}")
@@ -656,7 +910,31 @@ def main():
     parser.add_argument('--num-reels', type=int, default=5, 
                       help='Number of reels to process')
     
+    # Add advanced search arguments
+    parser.add_argument('--time-range', choices=['h', 'd', 'w', 'm', 'y'],
+                      help='Time range for search results (hour, day, week, month, year)')
+    parser.add_argument('--min-length', type=int,
+                      help='Minimum length of reels in minutes')
+    parser.add_argument('--exact-match', action='store_true',
+                      help='Use exact phrase matching for search')
+    parser.add_argument('--exclude', type=str,
+                      help='Comma-separated terms to exclude from search')
+    parser.add_argument('--safe-search', choices=['off', 'moderate', 'strict'],
+                      default='off', help='Safe search level')
+    
     args = parser.parse_args()
+    
+    # Set environment variables from command line arguments
+    if args.time_range:
+        os.environ['SEARCH_TIME_RANGE'] = args.time_range
+    if args.min_length:
+        os.environ['SEARCH_MIN_LENGTH'] = str(args.min_length)
+    if args.exact_match:
+        os.environ['SEARCH_EXACT_MATCH'] = 'true'
+    if args.exclude:
+        os.environ['SEARCH_EXCLUDE'] = args.exclude
+    if args.safe_search:
+        os.environ['SEARCH_SAFE'] = args.safe_search
     
     start_input = args.search if args.search else args.url
     is_search = bool(args.search)
