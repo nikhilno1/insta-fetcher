@@ -181,7 +181,6 @@ class InstagramReelExtractor:
 
     def extract_reel_data(self, reel_url: str) -> Dict:
         """Extract data from a single reel."""
-        # Ensure URL is in correct format before processing
         original_url = self.normalize_reel_url(reel_url)
         original_reel_id = original_url.split('/')[-2]
         caption = ""
@@ -198,6 +197,9 @@ class InstagramReelExtractor:
             
             if current_reel_id != original_reel_id:
                 print(f"Note: Instagram redirected from reel {original_reel_id} to {current_reel_id}")
+                # Update the URL for all subsequent operations to use the redirected URL
+                original_url = self.normalize_reel_url(current_url)
+                original_reel_id = current_reel_id
             
             # Wait for the page content to load
             self.page.wait_for_selector('video', timeout=45000)
@@ -206,7 +208,7 @@ class InstagramReelExtractor:
             # Try to get the caption using multiple methods
             try:
                 # Try API methods first
-                api_data = self.get_reel_caption(current_url)
+                api_data = self.get_reel_caption(original_url)  # Use the redirected URL
                 if api_data and api_data.get('caption'):
                     caption = api_data['caption']
                 
@@ -239,8 +241,8 @@ class InstagramReelExtractor:
             except Exception as e:
                 print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Warning: Error fetching caption: {str(e)}")
             
-            # Download video and extract audio
-            video_path, _ = download_video(current_url, self.output_dir)
+            # Download video and extract audio for the current URL
+            video_path, _ = download_video(original_url, self.output_dir)  # Use the redirected URL
             audio_path = extract_audio(video_path, self.output_dir)
             
             # Get transcription
@@ -261,19 +263,39 @@ class InstagramReelExtractor:
             # Check keywords in caption first
             if caption and not self.check_keywords(caption, "caption"):
                 if not transcription or not self.check_keywords(transcription, "transcription"):
-                    raise KeywordNotFoundError(f"Reel does not contain any specified keywords (checked caption and transcription)")
+                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Skipping reel {original_url}: No matching keywords found in caption or transcription")
+                    return {
+                        "reel_id": original_reel_id,
+                        "original_url": original_url,
+                        "final_url": original_url,
+                        "timestamp": datetime.now().isoformat(),
+                        "transcription": transcription,
+                        "caption": caption,
+                        "skipped": "No matching keywords found"
+                    }
             
             return {
-                "reel_id": current_reel_id,
+                "reel_id": original_reel_id,
                 "original_url": original_url,
-                "final_url": current_url,
+                "final_url": original_url,
                 "timestamp": datetime.now().isoformat(),
                 "transcription": transcription,
                 "caption": caption,
             }
             
+        except KeywordNotFoundError as e:
+            print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Skipping reel {original_url}: {str(e)}")
+            return {
+                "reel_id": current_reel_id if 'current_reel_id' in locals() else original_reel_id,
+                "original_url": original_url,
+                "final_url": current_url if 'current_url' in locals() else original_url,
+                "timestamp": datetime.now().isoformat(),
+                "transcription": transcription if 'transcription' in locals() else "",
+                "caption": caption,
+                "skipped": str(e)
+            }
         except Exception as e:
-            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {original_url}: {str(e)}")
+            print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {original_url}: {str(e)}")
             return {
                 "reel_id": current_reel_id if 'current_reel_id' in locals() else original_reel_id,
                 "original_url": original_url,
