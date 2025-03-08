@@ -291,7 +291,8 @@ class InstagramReelExtractor:
                 "User-Agent": self.USER_AGENT,
                 "Accept": "*/*",
                 "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",  # Explicitly handle compression
+                # Remove brotli from accepted encodings
+                "Accept-Encoding": "gzip, deflate",
                 "Referer": "https://www.instagram.com/",
                 "X-IG-App-ID": "936619743392459",
                 "X-Requested-With": "XMLHttpRequest",
@@ -309,36 +310,20 @@ class InstagramReelExtractor:
                 print("Could not find media ID")
                 return {"caption": ""}
 
-            # Try different API endpoints
-            endpoints = [
-                f"https://www.instagram.com/api/v1/media/{media_id}/info/",
-                f"https://i.instagram.com/api/v1/media/{media_id}/info/"
-            ]
-
-            for api_url in endpoints:
-                try:
-                    print(f"Trying API endpoint: {api_url}")
-                    response = client.get(api_url)
-                    print(f"Response Status: {response.status_code}")
-
-                    if response.status_code == 200:
-                        # Handle potential compression
-                        content_encoding = response.headers.get('content-encoding', '').lower()
-                        if content_encoding == 'br':
-                            decompressed = brotli.decompress(response.content)
-                            data = json.loads(decompressed)
-                        else:
-                            data = response.json()
-                        
-                        if 'items' in data and data['items']:
-                            caption_data = data['items'][0].get('caption', {})
-                            if isinstance(caption_data, dict):
-                                return {"caption": caption_data.get('text', '')}
-                            return {"caption": caption_data or ''}
-                except Exception as e:
-                    print(f"Error with endpoint {api_url}: {str(e)}")
-                    continue
-
+            # Use only the endpoint that consistently works
+            api_url = f"https://i.instagram.com/api/v1/media/{media_id}/info/"
+            
+            print(f"Fetching caption from API...")
+            response = client.get(api_url)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'items' in data and data['items']:
+                    caption_data = data['items'][0].get('caption', {})
+                    if isinstance(caption_data, dict):
+                        return {"caption": caption_data.get('text', '')}
+                    return {"caption": caption_data or ''}
+            
             return {"caption": ""}
             
         except Exception as e:
