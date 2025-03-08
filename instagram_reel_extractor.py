@@ -167,9 +167,22 @@ class InstagramReelExtractor:
             return True
         return False
 
+    def normalize_reel_url(self, url: str) -> str:
+        """Convert any Instagram reel URL to the /reels/ format."""
+        if not url:
+            return url
+        
+        # Extract the reel ID using regex to handle different URL formats
+        reel_id_match = re.search(r'(?:reel|reels)/([A-Za-z0-9_-]+)', url)
+        if reel_id_match:
+            reel_id = reel_id_match.group(1)
+            return f"https://www.instagram.com/reels/{reel_id}/"
+        return url
+
     def extract_reel_data(self, reel_url: str) -> Dict:
         """Extract data from a single reel."""
-        original_url = reel_url
+        # Ensure URL is in correct format before processing
+        original_url = self.normalize_reel_url(reel_url)
         original_reel_id = original_url.split('/')[-2]
         caption = ""
         
@@ -678,16 +691,17 @@ class InstagramReelExtractor:
                     print("Verification completed! Continuing with search...")
                 
                 # Extract reel links
-                new_links = search_page.query_selector_all('a[href*="instagram.com/reel/"]')
+                new_links = search_page.query_selector_all('a[href*="instagram.com/reel"]')
                 page_urls = []
                 
                 for link in new_links:
                     url = link.get_attribute('href')
                     if url:
-                        # Clean up the URL
+                        # Clean up and normalize the URL
                         if '?' in url:
                             url = url.split('?')[0]
-                        if url not in reel_urls and url not in page_urls and '/reel/' in url:
+                        url = self.normalize_reel_url(url)
+                        if url not in reel_urls and url not in page_urls and '/reels/' in url:
                             page_urls.append(url)
                             print(f"Found reel: {url}")
                 
@@ -768,17 +782,16 @@ class InstagramReelExtractor:
                     raise ValueError("Failed to create temporary URL file")
             
             else:
-                # Original URL/file mode processing
                 self.setup_browser()
                 self.login_to_instagram()
-                time.sleep(2)  # Increased initial wait after login
+                time.sleep(2)
                 
                 print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Starting to process {self.num_reels} reels")
                 
                 if self.start_input.endswith('.txt'):
                     # File mode - process URLs from file
                     with open(self.start_input, 'r') as f:
-                        urls = [line.strip() for line in f if line.strip()]
+                        urls = [self.normalize_reel_url(line.strip()) for line in f if line.strip()]
                     total_urls = len(urls)
                     print(f"Found {total_urls} URLs in file")
                     
@@ -799,37 +812,7 @@ class InstagramReelExtractor:
                             continue
                         
                         try:
-                            # Reset page for each new reel
-                            if self.page:
-                                self.page.close()
-                            self.page = self.browser.new_page()
-                            
-                            # Navigate to Instagram first
-                            print("Refreshing Instagram session...")
-                            self.page.goto('https://www.instagram.com/', timeout=30000)
-                            time.sleep(1)
-                            
-                            # Then navigate to the reel
-                            print(f"Navigating to reel: {url}")
-                            self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                            
-                            # Wait for network idle
-                            self.page.wait_for_load_state("networkidle", timeout=30000)
-                            
-                            # Multiple attempts to find the video element
-                            max_attempts = 3
-                            for attempt in range(max_attempts):
-                                try:
-                                    print(f"Attempt {attempt + 1}: Waiting for video element...")
-                                    self.page.wait_for_selector('video', timeout=20000)
-                                    break
-                                except Exception as e:
-                                    if attempt == max_attempts - 1:
-                                        raise e
-                                    print("Retrying...")
-                                    time.sleep(2)
-                            
-                            # Extract data using the existing method
+                            # Process each URL using the extract_reel_data method
                             reel_data = self.extract_reel_data(url)
                             with open(output_file, 'w') as f:
                                 json.dump(reel_data, f, indent=4)
@@ -851,7 +834,8 @@ class InstagramReelExtractor:
                             break
                 
                 else:
-                    # Single URL mode - process starting from given URL
+                    # Single URL mode
+                    self.start_input = self.normalize_reel_url(self.start_input)
                     processed_count = 0
                     skipped_count = 0
                     current_url = self.start_input
@@ -875,7 +859,7 @@ class InstagramReelExtractor:
                                 processed_count += 1
                             except Exception as e:
                                 print(f"Error processing reel {reel_id}: {str(e)}")
-                                break  # Stop if we encounter an error in single URL mode
+                                break
                         
                         if processed_count >= self.num_reels:
                             break
