@@ -30,16 +30,24 @@ class InstagramReelExtractor:
     # Single Chrome Windows user agent
     USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
 
-    def __init__(self, start_url: str, num_reels: int, output_dir: Path):
-        """Initialize the Instagram reel extractor."""
-        self.start_url = start_url
+    def __init__(self, start_input: str, num_reels: int, output_dir: Path, is_search: bool = False):
+        """Initialize the Instagram reel extractor.
+        
+        Args:
+            start_input: Either a starting URL/file or a search keyword
+            num_reels: Number of reels to process
+            output_dir: Directory to save output files
+            is_search: Whether the start_input is a search keyword
+        """
+        self.start_input = start_input
+        self.is_search = is_search
         self.num_reels = num_reels
         self.output_dir = output_dir
         self.browser = None
         self.page = None
         
-        # Get keywords from env file if keyword checking is enabled
-        self.enable_keyword_check = os.getenv('ENABLE_KEYWORD_CHECK', 'false').lower() == 'true'
+        # Only enable keyword checking if we're not in search mode
+        self.enable_keyword_check = (not is_search) and os.getenv('ENABLE_KEYWORD_CHECK', 'false').lower() == 'true'
         if self.enable_keyword_check:
             keywords_str = os.getenv('INSTAGRAM_KEYWORDS', '').strip()
             self.keywords = [k.strip().lower() for k in keywords_str.split(',') if k.strip()]
@@ -47,7 +55,10 @@ class InstagramReelExtractor:
                 print(f"Filtering reels for keywords: {self.keywords}")
         else:
             self.keywords = []
-            print("Keyword checking is disabled")
+            if is_search:
+                print("Keyword filtering disabled (using search mode)")
+            else:
+                print("Keyword checking is disabled")
 
     def setup_browser(self) -> None:
         """Initialize browser with randomized properties and persistent profile."""
@@ -373,15 +384,88 @@ class InstagramReelExtractor:
             self.page.screenshot(path="login_error.png")
             raise
 
+    def search_reels(self) -> str:
+        """Search for reels using the given keyword and return the first reel URL."""
+        print(f"Searching for reels with keyword: {self.start_input}")
+        
+        # Navigate to Instagram search page
+        search_url = f"https://www.instagram.com/explore/tags/{self.start_input}/"
+        self.page.goto(search_url, wait_until="networkidle")
+        time.sleep(random.uniform(2, 3))
+
+        try:
+            # Look for the Reels tab and click it
+            reels_tab = self.page.get_by_text("Reels")
+            reels_tab.click()
+            time.sleep(random.uniform(1, 2))
+
+            # Find the first reel link
+            reel_link = self.page.locator('a[href*="/reel/"]').first
+            if not reel_link:
+                raise ValueError("No reels found for the given keyword")
+
+            reel_url = reel_link.get_attribute('href')
+            if not reel_url.startswith('http'):
+                reel_url = f"https://www.instagram.com{reel_url}"
+
+            print(f"Found first reel: {reel_url}")
+            return reel_url
+
+        except Exception as e:
+            print(f"Error during search: {str(e)}")
+            raise
+
     def process_reels(self) -> None:
         """Process reels with natural behavior."""
         try:
             self.setup_browser()
             self.login_to_instagram()
             time.sleep(0.5)
-            
-            if self.start_url.endswith('.txt'):  # File mode
-                with open(self.start_url, 'r') as f:
+
+            if self.is_search:
+                # Search mode: Get the starting URL from search
+                start_url = self.search_reels()
+                self.page.goto(start_url, wait_until="networkidle")
+                current_url = self.page.url
+                processed_count = 0
+                skipped_count = 0
+
+                # Process reels similar to single URL mode
+                while processed_count < self.num_reels:
+                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Processing reel {processed_count + 1}/{self.num_reels}")
+                    
+                    if processed_count > 0:
+                        time.sleep(0.5)
+                    
+                    reel_id = current_url.split('/')[-2]
+                    output_file = self.output_dir / f"{reel_id}.json"
+                    
+                    if output_file.exists():
+                        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Reel {reel_id} already exists in {output_file}, skipping.")
+                        skipped_count += 1
+                        processed_count += 1
+                    else:
+                        try:
+                            reel_data = self.extract_reel_data(current_url)
+                            with open(output_file, 'w') as f:
+                                json.dump(reel_data, f, indent=4)
+                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Saved new reel data to {output_file}")
+                            processed_count += 1
+                        except Exception as e:
+                            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {reel_id}: {str(e)}")
+                    
+                    if processed_count >= self.num_reels:
+                        print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Completed processing {self.num_reels} reels")
+                        print(f"New reels: {processed_count - skipped_count}")
+                        print(f"Skipped reels: {skipped_count}")
+                        break
+                    
+                    time.sleep(0.3)
+                    current_url = self.scroll_to_next_reel()
+
+            elif self.start_input.endswith('.txt'):
+                # File mode processing
+                with open(self.start_input, 'r') as f:
                     urls = [line.strip() for line in f if line.strip()]
                 total_urls = len(urls)
                 print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Found {total_urls} URLs in file")
@@ -412,11 +496,12 @@ class InstagramReelExtractor:
                         except Exception as e:
                             print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {reel_id}: {str(e)}")
             
-            else:  # Single URL mode (existing behavior)
+            else:
+                # Single URL mode processing
                 print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Starting to process {self.num_reels} reels")
-                print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Navigating to starting reel: {self.start_url}")
+                print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Navigating to starting reel: {self.start_input}")
                 
-                self.page.goto(self.start_url, wait_until="networkidle")
+                self.page.goto(self.start_input, wait_until="networkidle")
                 time.sleep(0.5)
                 
                 current_url = self.page.url
@@ -466,16 +551,25 @@ class InstagramReelExtractor:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Extract and transcribe Instagram Reels')
-    parser.add_argument('start_url', help='Starting Instagram Reel URL or text file containing reel URLs')
+    
+    # Create a mutually exclusive group for input type
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('--url', help='Starting Instagram Reel URL or text file containing reel URLs')
+    input_group.add_argument('--search', help='Keyword to search for reels')
+    
     parser.add_argument('--num-reels', type=int, default=5, 
-                      help='Number of reels to process (only used with single URL mode)')
+                      help='Number of reels to process')
     
     args = parser.parse_args()
     
+    start_input = args.search if args.search else args.url
+    is_search = bool(args.search)
+    
     extractor = InstagramReelExtractor(
-        args.start_url, 
-        args.num_reels if not args.start_url.endswith('.txt') else None,
-        Path(os.getenv('OUTPUT_DIR', 'output'))
+        start_input,
+        args.num_reels,
+        Path(os.getenv('OUTPUT_DIR', 'output')),
+        is_search=is_search
     )
     extractor.process_reels()
 
