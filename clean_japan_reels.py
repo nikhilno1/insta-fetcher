@@ -34,6 +34,16 @@ def should_keep_file(file_path: Path, keywords: list) -> tuple[bool, str, dict]:
     except Exception as e:
         return True, f"Error processing file (keeping it): {str(e)}", {'caption': '', 'transcription': ''}
 
+def get_default_keywords():
+    """Get the default list of Japan-related keywords."""
+    return [
+        'japan', 'japanese', 'tokyo', 'kyoto', 'osaka', 'hiroshima',
+        'shinkansen', 'bullet train', 'mount fuji', 'mt fuji',
+        'sushi', 'ramen', 'sakura', 'hanami', 'kimono', 'yukata',
+        'onsen', 'ryokan', 'shrine', 'temple', 'jinja', 'yen',
+        'shibuya', 'harajuku', 'akihabara', 'shinjuku'
+    ]
+
 def main():
     parser = argparse.ArgumentParser(description='Clean non-Japan related reels from output folder')
     parser.add_argument('--delete', action='store_true', 
@@ -42,14 +52,8 @@ def main():
                       help='Directory containing JSON files (default: output)')
     args = parser.parse_args()
     
-    # Keywords to check for
-    keywords = [
-        'japan', 'japanese', 'tokyo', 'kyoto', 'osaka', 'hiroshima',
-        'shinkansen', 'bullet train', 'mount fuji', 'mt fuji',
-        'sushi', 'ramen', 'sakura', 'hanami', 'kimono', 'yukata',
-        'onsen', 'ryokan', 'shrine', 'temple', 'jinja', 'yen',
-        'shibuya', 'harajuku', 'akihabara', 'shinjuku'
-    ]
+    # Use the same keywords as the extractor
+    keywords = get_default_keywords()
     
     output_dir = Path(args.output_dir)
     if not output_dir.exists():

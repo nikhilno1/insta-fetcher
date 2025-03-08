@@ -3,15 +3,18 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 import random
+import re
 
 import openai
 from playwright.sync_api import sync_playwright, Page, Browser
 from dotenv import load_dotenv
 import httpx
+import brotli
 
 from media_utils import download_video, extract_audio, cleanup_temp_files
+from keywords import get_default_keywords
 
 # Custom exception class - moved to top
 class KeywordNotFoundError(Exception):
@@ -31,14 +34,7 @@ class InstagramReelExtractor:
     USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
 
     def __init__(self, start_input: str, num_reels: int, output_dir: Path, is_search: bool = False):
-        """Initialize the Instagram reel extractor.
-        
-        Args:
-            start_input: Either a starting URL/file or a search keyword
-            num_reels: Number of reels to process
-            output_dir: Directory to save output files
-            is_search: Whether the start_input is a search keyword
-        """
+        """Initialize the Instagram reel extractor."""
         self.start_input = start_input
         self.is_search = is_search
         self.num_reels = num_reels
@@ -48,11 +44,19 @@ class InstagramReelExtractor:
         
         # Only enable keyword checking if we're not in search mode
         self.enable_keyword_check = (not is_search) and os.getenv('ENABLE_KEYWORD_CHECK', 'false').lower() == 'true'
+        
         if self.enable_keyword_check:
-            keywords_str = os.getenv('INSTAGRAM_KEYWORDS', '').strip()
-            self.keywords = [k.strip().lower() for k in keywords_str.split(',') if k.strip()]
-            if self.keywords:
-                print(f"Filtering reels for keywords: {self.keywords}")
+            # Always use default keywords from the shared module
+            self.keywords = get_default_keywords()
+            
+            # Optionally override with env vars if OVERRIDE_DEFAULT_KEYWORDS is set
+            if os.getenv('OVERRIDE_DEFAULT_KEYWORDS', 'false').lower() == 'true':
+                keywords_str = os.getenv('INSTAGRAM_KEYWORDS', '').strip()
+                if keywords_str:
+                    self.keywords = [k.strip().lower() for k in keywords_str.split(',') if k.strip()]
+                    print("Using custom keywords from environment variables")
+            
+            print(f"Filtering reels for keywords: {self.keywords}")
         else:
             self.keywords = []
             if is_search:
@@ -149,42 +153,85 @@ class InstagramReelExtractor:
             print(f"Note: Video element interaction skipped - {str(e)}")
             time.sleep(random.uniform(1, 2))
 
+    def check_keywords(self, text: str, source: str) -> bool:
+        """Check if any keywords are present in the text."""
+        if not self.enable_keyword_check or not self.keywords:
+            return True
+            
+        if not text:
+            return False
+            
+        text_lower = text.lower()
+        found_keywords = [k for k in self.keywords if k.lower() in text_lower]
+        if found_keywords:
+            print(f"Found keywords in {source}: {found_keywords}")
+            return True
+        return False
+
     def extract_reel_data(self, reel_url: str) -> Dict:
         """Extract data from a single reel."""
-        if not any(pattern in reel_url for pattern in ['/reel/', '/reels/']) or reel_url == 'https://www.instagram.com/':
-            raise ValueError(f"Invalid reel URL: {reel_url}")
-        
+        original_url = reel_url
+        original_reel_id = original_url.split('/')[-2]
         caption = ""
-        # Try to get the caption first, but don't block if it fails
+        
         try:
-            api_data = self.get_reel_caption(reel_url)
-            if api_data:
-                caption = api_data.get('caption', '')
-                print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Caption: {caption}\n")
+            # Navigate to the reel with longer timeout
+            print(f"Navigating to reel: {original_url}")
+            self.page.goto(original_url, wait_until="networkidle", timeout=60000)
+            time.sleep(2)
+            
+            # Get the current URL and log if there's a redirect
+            current_url = self.page.url
+            current_reel_id = current_url.split('/')[-2]
+            
+            if current_reel_id != original_reel_id:
+                print(f"Note: Instagram redirected from reel {original_reel_id} to {current_reel_id}")
+            
+            # Wait for the page content to load
+            self.page.wait_for_selector('video', timeout=45000)
+            time.sleep(1)  # Short pause to ensure page is stable
+            
+            # Try to get the caption using multiple methods
+            try:
+                # Try API methods first
+                api_data = self.get_reel_caption(current_url)
+                if api_data and api_data.get('caption'):
+                    caption = api_data['caption']
                 
-                # Check keywords if enabled and we have a caption
-                if caption and self.enable_keyword_check and self.keywords:
-                    caption_lower = caption.lower()
-                    if not any(keyword.lower() in caption_lower for keyword in self.keywords):
-                        raise KeywordNotFoundError("Reel does not contain any specified keywords")
-        except Exception as e:
-            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Warning: Could not fetch caption: {str(e)}")
-        
-        # Proceed with the original flow
-        self.page.goto(reel_url, wait_until="networkidle")
-        time.sleep(1)
-        
-        current_url = self.page.url
-        # Updated URL validation to match the input URL format
-        if not any(pattern in current_url for pattern in ['/reel/', '/reels/']):
-            raise ValueError(f"Failed to load reel: {current_url}")
-        
-        try:
+                # If API methods fail, try page scraping
+                if not caption:
+                    # Try multiple selector patterns that Instagram uses
+                    selectors = [
+                        'span[class*="caption"]',
+                        'span[class*="Caption"]',
+                        'div[class*="caption"]',
+                        'div[class*="Caption"]'
+                    ]
+                    
+                    for selector in selectors:
+                        try:
+                            caption_element = self.page.locator(selector).first
+                            if caption_element:
+                                caption = caption_element.inner_text()
+                                if caption:
+                                    break
+                        except Exception:
+                            continue
+                
+                if caption:
+                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Successfully fetched caption")
+                    print(f"Caption: {caption}\n")
+                else:
+                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Warning: Could not find caption\n")
+                    
+            except Exception as e:
+                print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Warning: Error fetching caption: {str(e)}")
+            
             # Download video and extract audio
             video_path, _ = download_video(current_url, self.output_dir)
             audio_path = extract_audio(video_path, self.output_dir)
             
-            # Updated OpenAI API call for v1.0+
+            # Get transcription
             client = openai.OpenAI()
             with open(str(audio_path), "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
@@ -199,82 +246,126 @@ class InstagramReelExtractor:
             cleanup_temp_files(video_path)
             cleanup_temp_files(audio_path)
             
-            # If we couldn't get caption earlier, check keywords in transcription
-            if not caption and self.enable_keyword_check and self.keywords:
-                transcription_lower = transcription.lower()
-                if not any(keyword.lower() in transcription_lower for keyword in self.keywords):
-                    raise KeywordNotFoundError("Reel does not contain any specified keywords")
+            # Check keywords in caption first
+            if caption and not self.check_keywords(caption, "caption"):
+                if not transcription or not self.check_keywords(transcription, "transcription"):
+                    raise KeywordNotFoundError(f"Reel does not contain any specified keywords (checked caption and transcription)")
             
             return {
-                "reel_id": current_url.split('/')[-2],
-                "url": current_url,
+                "reel_id": current_reel_id,
+                "original_url": original_url,
+                "final_url": current_url,
                 "timestamp": datetime.now().isoformat(),
                 "transcription": transcription,
-                "caption": caption,  # Will be empty string if fetching failed
+                "caption": caption,
             }
             
         except Exception as e:
-            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {current_url}: {str(e)}")
+            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {original_url}: {str(e)}")
             return {
-                "reel_id": current_url.split('/')[-2],
-                "url": current_url,
+                "reel_id": current_reel_id if 'current_reel_id' in locals() else original_reel_id,
+                "original_url": original_url,
+                "final_url": current_url if 'current_url' in locals() else original_url,
                 "timestamp": datetime.now().isoformat(),
-                "transcription": "",
-                "caption": caption,  # Include caption if we got it
+                "transcription": transcription if 'transcription' in locals() else "",
+                "caption": caption,
                 "error": str(e)
             }
 
     def get_reel_caption(self, reel_url: str) -> Dict:
         """Get reel caption using Instagram's API."""
-        shortcode = reel_url.strip('/').split('/')[-1]
-        
         client = httpx.Client(
             headers={
-                "x-ig-app-id": "936619743392459",
-                "x-asbd-id": "129477",
-                "x-ig-www-claim": "0",
-                "x-requested-with": "XMLHttpRequest",
-                "x-csrftoken": os.getenv('INSTAGRAM_CSRF_TOKEN', ''),
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
+                "User-Agent": self.USER_AGENT,
                 "Accept": "*/*",
-                "Cookie": f"sessionid={os.getenv('INSTAGRAM_SESSION_ID')}; csrftoken={os.getenv('INSTAGRAM_CSRF_TOKEN')}; ds_user_id={os.getenv('INSTAGRAM_DS_USER_ID')}",
-                "Origin": "https://www.instagram.com",
-                "Referer": f"https://www.instagram.com/reel/{shortcode}/",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",  # Explicitly handle compression
+                "Referer": "https://www.instagram.com/",
+                "X-IG-App-ID": "936619743392459",
+                "X-Requested-With": "XMLHttpRequest",
+                "X-ASBD-ID": "198387",
+                "Cookie": f"sessionid={os.getenv('INSTAGRAM_SESSION_ID')}",
             },
             timeout=30.0,
             follow_redirects=True
         )
 
         try:
-            # First API endpoint (will likely fail but needed for auth flow)
-            api_url = f"https://www.instagram.com/api/v1/web/get_ruling_for_content/?content_type=MEDIA&surface=POST&content_id={shortcode}"
-            response = client.get(api_url)
-            
-            # Try alternative endpoint
-            if response.status_code != 200:
-                alt_url = f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
-                response = client.get(alt_url)
-            
-            data = response.json()
-            
-            # Extract caption from either response format
-            if 'items' in data:
-                return {"caption": data['items'][0].get('caption', {}).get('text', '')}
-            else:
-                media = data.get('graphql', {}).get('shortcode_media', {})
-                return {"caption": media.get('edge_media_to_caption', {}).get('edges', [{}])[0].get('node', {}).get('text', '')}
+            # First get the media ID from the page
+            media_id = self.get_media_id(reel_url)
+            if not media_id:
+                print("Could not find media ID")
+                return {"caption": ""}
+
+            # Try different API endpoints
+            endpoints = [
+                f"https://www.instagram.com/api/v1/media/{media_id}/info/",
+                f"https://i.instagram.com/api/v1/media/{media_id}/info/"
+            ]
+
+            for api_url in endpoints:
+                try:
+                    print(f"Trying API endpoint: {api_url}")
+                    response = client.get(api_url)
+                    print(f"Response Status: {response.status_code}")
+
+                    if response.status_code == 200:
+                        # Handle potential compression
+                        content_encoding = response.headers.get('content-encoding', '').lower()
+                        if content_encoding == 'br':
+                            decompressed = brotli.decompress(response.content)
+                            data = json.loads(decompressed)
+                        else:
+                            data = response.json()
+                        
+                        if 'items' in data and data['items']:
+                            caption_data = data['items'][0].get('caption', {})
+                            if isinstance(caption_data, dict):
+                                return {"caption": caption_data.get('text', '')}
+                            return {"caption": caption_data or ''}
+                except Exception as e:
+                    print(f"Error with endpoint {api_url}: {str(e)}")
+                    continue
+
+            return {"caption": ""}
             
         except Exception as e:
             print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error fetching caption: {str(e)}")
+            return {"caption": ""}
+
+    def get_media_id(self, reel_url: str) -> Optional[str]:
+        """Get the internal media ID from the page source."""
+        try:
+            # Look for the media ID in the page source
+            page_content = self.page.content()
+            
+            patterns = [
+                r'"media_id":"(\d+)"',
+                r'instagram://media\?id=(\d+)',
+                r'"id":"(\d+)"',
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, page_content)
+                if match:
+                    media_id = match.group(1)
+                    print(f"Found media ID: {media_id}")
+                    return media_id
+            
+            return None
+        except Exception as e:
+            print(f"Error getting media ID: {str(e)}")
             return None
 
     def scroll_to_next_reel(self) -> str:
         """Smooth scroll to next reel."""
         time.sleep(random.uniform(0.5, 1))
         
-        # Press Down Arrow to move to next reel (more reliable than Space)
+        # Store current URL before scrolling
+        current_url = self.page.url
+        current_reel_id = current_url.split('/')[-2]
+        
+        # Press Down Arrow to move to next reel
         self.page.keyboard.press('ArrowDown')
         
         # Wait for URL to change and stabilize
@@ -282,16 +373,21 @@ class InstagramReelExtractor:
         
         # Get the new URL after scrolling
         new_url = self.page.url
+        new_reel_id = new_url.split('/')[-2]
         
-        # Verify we have a valid reel URL
-        if '/reels/' not in new_url or new_url == 'https://www.instagram.com/':
-            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Warning: Invalid reel URL detected after scroll")
-            # Try to find a reel link on the page
-            reel_link = self.page.locator('a[href*="/reels/"]').first
-            if reel_link:
-                new_url = reel_link.get_attribute('href')
-                if not new_url.startswith('http'):
-                    new_url = f"https://www.instagram.com{new_url}"
+        # Make sure we actually moved to a different reel
+        max_attempts = 3
+        attempts = 0
+        while new_reel_id == current_reel_id and attempts < max_attempts:
+            print(f"Reel didn't change, trying scroll again...")
+            self.page.keyboard.press('ArrowDown')
+            time.sleep(2)
+            new_url = self.page.url
+            new_reel_id = new_url.split('/')[-2]
+            attempts += 1
+        
+        if new_reel_id == current_reel_id:
+            raise ValueError(f"Failed to scroll to new reel after {max_attempts} attempts")
         
         print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Scrolled to new reel: {new_url}")
         return new_url
