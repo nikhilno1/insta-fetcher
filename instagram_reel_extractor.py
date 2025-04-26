@@ -168,14 +168,14 @@ class InstagramReelExtractor:
         return False
 
     def normalize_reel_url(self, url: str) -> str:
-        """Convert any Instagram reel URL to the /reels/ format."""
+        """Normalize any Instagram URL to the /reels/{id}/ format."""
         if not url:
             return url
-        
-        # Extract the reel ID using regex to handle different URL formats
-        reel_id_match = re.search(r'(?:reel|reels)/([A-Za-z0-9_-]+)', url)
-        if reel_id_match:
-            reel_id = reel_id_match.group(1)
+
+        # Extract the unique ID after the domain and before the next slash
+        match = re.search(r'instagram\.com/[^/]+/([A-Za-z0-9_-]+)', url)
+        if match:
+            reel_id = match.group(1)
             return f"https://www.instagram.com/reels/{reel_id}/"
         return url
 
@@ -184,6 +184,8 @@ class InstagramReelExtractor:
         original_url = self.normalize_reel_url(reel_url)
         original_reel_id = original_url.split('/')[-2]
         caption = ""
+        current_url = original_url  # <-- Initialize here
+        current_reel_id = original_reel_id  # <-- Initialize here
         
         try:
             # Navigate to the reel with longer timeout
@@ -195,15 +197,21 @@ class InstagramReelExtractor:
             current_url = self.page.url
             current_reel_id = current_url.split('/')[-2]
             
-            # Important: Update the reel_id if there was a redirect
+            # If redirected, try to go back to the intended reel
             if current_reel_id != original_reel_id:
                 print(f"Note: Instagram redirected from reel {original_reel_id} to {current_reel_id}")
-                # Use the current_reel_id for all subsequent operations
-                reel_id = current_reel_id
-                url = self.normalize_reel_url(current_url)
-            else:
-                reel_id = original_reel_id
-                url = original_url
+                print("Attempting to navigate back to the intended reel using ArrowUp...")
+                self.page.keyboard.press('ArrowUp')
+                time.sleep(2)
+                # Check if we are back to the original reel
+                back_url = self.page.url
+                back_reel_id = back_url.split('/')[-2]
+                if back_reel_id == original_reel_id:
+                    print(f"Successfully navigated back to the intended reel: {original_reel_id}")
+                    current_url = back_url
+                    current_reel_id = back_reel_id
+                else:
+                    print(f"Failed to navigate back to the intended reel. Continuing with redirected reel: {current_reel_id}")
             
             # Wait for the page content to load
             self.page.wait_for_selector('video', timeout=45000)
@@ -212,7 +220,7 @@ class InstagramReelExtractor:
             # Try to get the caption using multiple methods
             try:
                 # Try API methods first
-                api_data = self.get_reel_caption(url)  # Use the redirected URL
+                api_data = self.get_reel_caption(current_url)  # Use the redirected URL
                 if api_data and api_data.get('caption'):
                     caption = api_data['caption']
                 
@@ -246,7 +254,7 @@ class InstagramReelExtractor:
                 print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Warning: Error fetching caption: {str(e)}")
             
             # Download video and extract audio for the current URL
-            video_path, _ = download_video(url, self.output_dir)  # Use the redirected URL
+            video_path, _ = download_video(current_url, self.output_dir)  # Use the redirected URL
             audio_path = extract_audio(video_path, self.output_dir)
             
             # Get transcription
@@ -267,10 +275,10 @@ class InstagramReelExtractor:
             # Check keywords in caption first
             if caption and not self.check_keywords(caption, "caption"):
                 if not transcription or not self.check_keywords(transcription, "transcription"):
-                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Skipping reel {url}: No matching keywords found in caption or transcription")
+                    print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Skipping reel {current_url}: No matching keywords found in caption or transcription")
                     return {
-                        "reel_id": reel_id,
-                        "url": url,
+                        "reel_id": current_reel_id,
+                        "url": current_url,
                         "timestamp": datetime.now().isoformat(),
                         "transcription": transcription,
                         "caption": caption,
@@ -278,28 +286,28 @@ class InstagramReelExtractor:
                     }
             
             return {
-                "reel_id": reel_id,
-                "url": url,
+                "reel_id": current_reel_id,
+                "url": current_url,
                 "timestamp": datetime.now().isoformat(),
                 "transcription": transcription,
                 "caption": caption,
             }
             
         except KeywordNotFoundError as e:
-            print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Skipping reel {url}: {str(e)}")
+            print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Skipping reel {current_url}: {str(e)}")
             return {
-                "reel_id": current_reel_id if 'current_reel_id' in locals() else original_reel_id,
-                "url": current_url if 'current_url' in locals() else original_url,
+                "reel_id": current_reel_id,
+                "url": current_url,
                 "timestamp": datetime.now().isoformat(),
                 "transcription": transcription if 'transcription' in locals() else "",
                 "caption": caption,
                 "skipped": str(e)
             }
         except Exception as e:
-            print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {url}: {str(e)}")
+            print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Error processing reel {current_url}: {str(e)}")
             return {
-                "reel_id": current_reel_id if 'current_reel_id' in locals() else original_reel_id,
-                "url": current_url if 'current_url' in locals() else original_url,
+                "reel_id": current_reel_id,
+                "url": current_url,
                 "timestamp": datetime.now().isoformat(),
                 "transcription": transcription if 'transcription' in locals() else "",
                 "caption": caption,
